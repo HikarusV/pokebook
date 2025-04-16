@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Pokémon List Infinite Scroll</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            margin: 0;
+            padding: 0;
+        }
+
+        h1 {
+            text-align: center;
+            padding: 1rem;
+            margin: 0;
+            background-color: #f4f4f4;
+            border-bottom: 1px solid #ddd;
+        }
+
+        .container {
+            display: flex;
+            height: calc(100vh - 64px);
+        }
+
+        .pokemon-list {
+            flex: 0 0 300px;
+            overflow-y: auto;
+            border-right: 1px solid #ddd;
+            padding: 1rem;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        .pokemon {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            border-bottom: 1px solid #ddd;
+            padding-bottom: 1rem;
+            cursor: pointer;
+        }
+
+        .evolution-pokemon {
+            cursor: pointer;
+        }
+
+        .pokemon img {
+            width: 72px;
+            height: 72px;
+        }
+
+        .detail {
+            flex: 1;
+            padding: 2rem;
+            overflow-y: auto;
+        }
+    </style>
+</head>
+
+<body>
+  <h1>Pokémon Viewer</h1>
+  <div class="container">
+    <div class="pokemon-list" id="pokemonListContainer">
+      <div id="pokemonList">Loading...</div>
+    </div>
+    <div class="detail" id="pokemonDetail">
+      <p>Select a Pokémon to view details.</p>
+    </div>
+  </div>
+
+  <script>
+    const listContainer = document.getElementById('pokemonList');
+    const scrollContainer = document.getElementById('pokemonListContainer');
+    const detailContainer = document.getElementById('pokemonDetail');
+
+    let currentUrl = 'https://pokeapi.co/api/v2/pokemon?limit=40';
+    let nextUrl = null;
+    let isLoading = false;
+
+    async function fetchPokemonList(url) {
+      isLoading = true;
+      const res = await fetch(url);
+      const data = await res.json();
+
+      nextUrl = data.next;
+
+      for (const pokemon of data.results) {
+        const details = await fetchPokemonDetails(pokemon.url);
+        const item = createPokemonItem(pokemon, details);
+        listContainer.appendChild(item);
+      }
+
+      isLoading = false;
+    }
+
+    async function fetchPokemonDetails(urlOrName) {
+      const res = await fetch(
+        typeof urlOrName === 'string' && urlOrName.startsWith('http')
+          ? urlOrName
+          : `https://pokeapi.co/api/v2/pokemon/${urlOrName}/`
+      );
+      return await res.json();
+    }
+
+    function createPokemonItem(pokemon, details) {
+      const item = document.createElement('div');
+      item.className = 'pokemon';
+
+      const image = document.createElement('img');
+      image.src = details.sprites.other['official-artwork'].front_default || '';
+      image.alt = pokemon.name;
+
+      const name = document.createElement('div');
+      name.textContent = pokemon.name;
+
+      item.appendChild(image);
+      item.appendChild(name);
+
+      item.addEventListener('click', () => showDetail(details));
+
+      return item;
+    }
+
+    async function showDetail(param) {
+      const data = typeof param === 'object' ? param : await fetchPokemonDetails(param);
+
+      detailContainer.innerHTML = `<p class="loading">Loading details...</p>`;
+
+      const detailHTML = [];
+
+      detailHTML.push(`
+        <h2>${data.name}</h2>
+        <img src="${data.sprites.other['official-artwork'].front_default}" alt="${data.name}" width="150">
+        <p><strong>Height:</strong> ${data.height}</p>
+        <p><strong>Weight:</strong> ${data.weight}</p>
+        <p><strong>Types:</strong> ${data.types.map(t => t.type.name).join(', ')}</p>
+        <p><strong>Abilities:</strong> ${data.abilities.map(a => `${a.ability.name}${a.is_hidden ? ' (Hidden)' : ''}`).join(', ')}</p>
+        <p><strong>Stats:</strong></p>
+        <ul>
+          ${data.stats.map(s => `<li>${s.stat.name}: ${s.base_stat}</li>`).join('')}
+        </ul>
+        <button onclick="playCry('${data.cries.latest}')">🔊 Play Cry</button>
+        <audio id="cry-audio" src="${data.cries.latest}"></audio>
+      `);
+
+      // Sprite Gallery
+      const spriteImages = Object.entries(data.sprites)
+        .filter(([_, value]) => typeof value === 'string' && value)
+        .map(([key, value]) => `<img src="${value}" alt="${key}" width="72">`)
+        .join('');
+      detailHTML.push(`<h3>Sprite Gallery</h3><div style="display:flex;gap:8px;flex-wrap:wrap">${spriteImages}</div>`);
+
+      // Moves
+      const moves = data.moves.slice(0, 5);
+      const moveDetails = await Promise.all(moves.map(async (moveData) => {
+        const moveRes = await fetch(moveData.move.url);
+        const move = await moveRes.json();
+        const learned = moveData.version_group_details[0];
+        return `
+          <li>
+            <strong>${move.name}</strong> 
+            <ul>
+              <li>Type: ${move.type.name}</li>
+              <li>Power: ${move.power ?? 'N/A'}</li>
+              <li>PP: ${move.pp}</li>
+              <li>Accuracy: ${move.accuracy ?? 'N/A'}</li>
+              <li>Damage Class: ${move.damage_class.name}</li>
+              <li>Learned At Level: ${learned.level_learned_at}</li>
+              <li>Learn Method: ${learned.move_learn_method.name}</li>
+            </ul>
+          </li>
+        `;
+      }));
+      detailHTML.push(`<h3>Moves</h3><ul>${moveDetails.join('')}</ul>`);
+
+      detailContainer.innerHTML = detailHTML.join('');
+
+      // Evolution Chain
+      try {
+        const speciesRes = await fetch(`https://pokeapi.co/api/v2/pokemon-species/${data.id}`);
+        const speciesData = await speciesRes.json();
+        const evoChainUrl = speciesData.evolution_chain.url;
+        const evoRes = await fetch(evoChainUrl);
+        const evoData = await evoRes.json();
+
+        function parseEvolutionChain(chain) {
+          const result = [];
+          function traverse(node) {
+            result.push({
+              name: node.species.name,
+              url: node.species.url
+            });
+            node.evolves_to.forEach(traverse);
+          }
+          traverse(chain);
+          return result;
+        }
+
+        const evolutionChain = parseEvolutionChain(evoData.chain);
+        const currentIndex = evolutionChain.findIndex(evo => evo.name === data.name);
+
+        function getIdFromSpeciesUrl(url) {
+          const parts = url.split('/');
+          return parts[parts.length - 2];
+        }
+
+        const evoTitle = document.createElement('h3');
+        evoTitle.textContent = 'Evolution Chain';
+        detailContainer.appendChild(evoTitle);
+
+        const evoContainer = document.createElement('div');
+        evoContainer.style.display = 'flex';
+        evoContainer.style.gap = '12px';
+        evoContainer.style.flexWrap = 'wrap';
+
+        evolutionChain.forEach((evo, index) => {
+          const id = getIdFromSpeciesUrl(evo.url);
+          const imageUrl = `https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/${id}.png`;
+
+          const detailSegment = document.createElement('div');
+          detailSegment.style.textAlign = 'center';
+
+          if (index === currentIndex) {
+            detailSegment.style.border = '2px solid red';
+            detailSegment.style.padding = '5px';
+            detailSegment.style.borderRadius = '8px';
+          } else {
+            detailSegment.style.cursor = 'pointer';
+            detailSegment.addEventListener('click', () => showDetail(evo.name));
+          }
+
+          const img = document.createElement('img');
+          img.src = imageUrl;
+          img.alt = evo.name;
+          img.width = 100;
+
+          const label = document.createElement('p');
+          label.textContent = evo.name;
+
+          detailSegment.appendChild(img);
+          detailSegment.appendChild(label);
+
+          evoContainer.appendChild(detailSegment);
+        });
+
+        detailContainer.appendChild(evoContainer);
+      } catch (err) {
+        detailContainer.innerHTML += `<p style="color: red;">Failed to load evolution chain</p>`;
+        console.error('Evolution fetch error:', err);
+      }
+    }
+
+    function playCry(url) {
+      const audio = document.getElementById('cry-audio');
+      if (audio) {
+        audio.play();
+      }
+    }
+
+    // Infinite scroll logic
+    scrollContainer.addEventListener('scroll', () => {
+            const { scrollTop, scrollHeight, clientHeight } = scrollContainer;
+            const nearBottom = scrollTop + clientHeight >= scrollHeight - 100;
+
+            if (nearBottom && nextUrl && !isLoading) {
+                fetchPokemonList(nextUrl);
+            }
+        });
+
+        // Initial fetch
+        listContainer.innerHTML = '';
+        fetchPokemonList(currentUrl);
+    </script>
+</body>
+
+</html>
